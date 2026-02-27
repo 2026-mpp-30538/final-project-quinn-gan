@@ -1,0 +1,300 @@
+---
+title: "CMS Open Payments Analysis"
+subtitle: "30538 Final Project"
+author: "Quinn Gan"
+date: today
+format: 
+  html:
+    code-fold: true
+execute:
+  echo: true
+---
+
+This project analyzes the CMS Open Payments dataset for the 2023 fiscal year. The Open Payments program is a national initiative to increase transparency in healthcare. It documents the financial relationships between drug manufacturers and healthcare providers. Our study examines the General Payments dataset on a national scale. 
+
+Our analysis serves healthcare policy researchers, hospital administrators, or compliance teams who want to understand how industry payments to physicians are distributed and where potential concentration or conflict-of-interest risks may lie.
+
+Our program pulls data directly from the CMS Metastore API. We use a programmatic loop to handle large amounts of data. This method ensures we capture a complete set of records for our analysis.
+
+
+## 2. Data Preparation
+**Data Loading**
+
+```{python}
+import os
+import requests
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+from scipy import stats
+import numpy as np
+```
+
+### (1) Open payments data preparation 
+
+```{python}
+# --- STEP 1: SET UP PATHS ---
+# Using relative paths ensures the project is reproducible on any machine
+local_csv = "data/raw-data/open_payments_2023.csv"
+
+# Ensure the directory exists before attempting to save/check
+os.makedirs("data/raw-data", exist_ok=True)
+
+# --- STEP 2: LOAD OPEN PAYMENTS DATA (WITH CACHING) ---
+if os.path.exists(local_csv):
+    print("Loading Open Payments data from local cache...")
+    payments_df = pd.read_csv(local_csv)
+else:
+    print("Local cache not found.")
+    print(f"Debug: Python was looking for: {os.path.abspath(local_csv)}")
+    os.makedirs("data/raw-data", exist_ok=True)
+    print("Starting API retrieval...")
+
+    # Metadata API call
+    url = (
+        "https://openpaymentsdata.cms.gov"
+        "/api/1/metastore/schemas/dataset/items/"
+        "fb3a65aa-c901-4a38-a813-b04b00dfa2a9"
+    )
+    r = requests.get(url)
+    r.raise_for_status()
+    meta = r.json()
+
+    # Extract download URL
+    csv_url = meta["distribution"][0]["downloadURL"]
+
+    # Specify columns
+    usecols = [
+        "Covered_Recipient_Profile_ID", "Covered_Recipient_First_Name",
+        "Covered_Recipient_Last_Name", "Covered_Recipient_Type",
+        "Covered_Recipient_Specialty_1", "Total_Amount_of_Payment_USDollars",
+        "Date_of_Payment", "Number_of_Payments_Included_in_Total_Amount",
+        "Applicable_Manufacturer_or_Applicable_GPO_Making_Payment_Name",
+        "Name_of_Drug_or_Biological_or_Device_or_Medical_Supply_1",
+        "Nature_of_Payment_or_Transfer_of_Value", "Recipient_State",
+        "Recipient_City", "Recipient_Zip_Code", "Change_Type"
+    ]
+
+    # Read in chunks to manage memory
+    chunks = pd.read_csv(
+        csv_url,
+        usecols=usecols,
+        chunksize=200_000,
+        low_memory=False
+    )
+
+    payments_df = pd.concat(chunks, ignore_index=True)
+    
+    # Save the full dataframe to local CSV for future runs
+    payments_df.to_csv(local_csv, index=False)
+    print(f"Data successfully downloaded and saved to {local_csv}")
+
+# --- STEP 3: Quality Check & Data Processing ---
+# Convert payment date to datetime
+payments_df["Date_of_Payment"] = pd.to_datetime(
+    payments_df["Date_of_Payment"],
+    errors="coerce"
+)
+
+# Check for missing values in the payment date column
+payments_df["Date_of_Payment"].isna().mean()
+
+# Check the distribution of payment amounts
+payments_df["Total_Amount_of_Payment_USDollars"].describe()
+
+# Check for negative or zero payment amounts
+(payments_df["Total_Amount_of_Payment_USDollars"] <= 0).sum()
+
+# Filter out records with non-positive payment amounts
+payments_df = payments_df[payments_df["Total_Amount_of_Payment_USDollars"] > 0]
+
+# Check the percentage of missing values in each column
+payments_df.isna().mean().sort_values(ascending=False)
+
+# Check the distribution of categorical variables
+payments_df["Change_Type"].value_counts()
+payments_df["Covered_Recipient_Type"].value_counts()
+payments_df["Nature_of_Payment_or_Transfer_of_Value"].value_counts().head(10)
+
+# Standardize column names to lowercase
+payments_df.columns = payments_df.columns.str.lower()
+
+# Extract payment year and month for time-based analysis
+payments_df["payment_year"] = payments_df["date_of_payment"].dt.year
+payments_df["payment_month"] = payments_df["date_of_payment"].dt.month
+
+# Rename columns to more concise names
+payments_df = payments_df.rename(columns={
+    "nature_of_payment_or_transfer_of_value": "payment_type",
+    "total_amount_of_payment_usdollars": "payment_amount",
+    "date_of_payment": "payment_date",
+    "covered_recipient_specialty_1": "specialty",
+    "covered_recipient_type": "recipient_type",
+    "covered_recipient_profile_id": "recipient_id",
+    "applicable_manufacturer_or_applicable_gpo_making_payment_name": "manufacturer",
+    "number_of_payments_included_in_total_amount": "num_payments",
+    "recipient_state": "state",
+    "recipient_city": "city",
+    "recipient_zip_code": "zip_code",
+    "change_type": "change_type"
+})
+payments_df.head()
+
+# Create a new column with the cleaned specialty names (take the last specialty if multiple are listed)
+payments_df["specialty_clean"] = (
+    payments_df["specialty"]
+    .str.split("|")
+    .str[-1]
+    .str.strip()
+)
+payments_df.head()
+
+# Map long payment type descriptions to shorter categories
+payment_type_map = {
+    "Compensation for services other than consulting, including serving as faculty or as a speaker at a venue other than a continuing education program":
+        "Non-consulting professional services",
+
+    "Consulting Fee": "Consulting",
+    "Food and Beverage": "Food & Beverage",
+    "Travel and Lodging": "Travel & Lodging",
+    "Royalty or License": "Royalty / License",
+    "Honoraria": "Honoraria",
+    "Education": "Education",
+    "Grant": "Grant",
+    "Acquisitions": "Acquisitions",
+    "Entertainment": "Entertainment",
+    "Long term medical supply or device loan": "Device / Supply Loan"
+}
+
+# Create a new column with the cleaned payment type categories
+payments_df["payment_type_clean"] = (
+    payments_df["payment_type"]
+    .map(payment_type_map)
+    .fillna("Other")
+)
+
+# Calculate Z-scores for payment amounts to identify records that are several standard deviations away from the mean
+
+# I use the log of the amount because the raw data is extremely skewed
+z_scores = stats.zscore(np.log1p(payments_df['payment_amount']))
+outliers = payments_df[np.abs(z_scores) > 3]
+outliers.head()
+print(f"Number of statistical outliers detected (Z-score > 3): {len(outliers)}")
+print(f"Percentage of data marked as outliers: {len(outliers) / len(payments_df) * 100:.2f}%")
+```
+
+
+
+### (2) ACS data preparation
+```{python}
+# --- STEP 1: LOAD ACS DP03 DATA ---
+# Using the specific file I downloaded from Census Bureau
+acs_file = "/Users/quinn/final-project-quinn-gan/data/raw-data/ACSDP1Y2023.DP03-2026-02-27T224607.csv"
+df_acs_raw = pd.read_csv(acs_file)
+df_acs_raw.info()
+
+# The Census "Wide Profile" table has indicators as rows and geographies as columns
+# Setting the first column as index to facilitate transposition
+df_acs_raw = df_acs_raw.set_index('Label (Grouping)')
+
+# Filtering for "Estimate" columns only (excluding Margin of Error and Percentages)
+estimate_cols = [c for c in df_acs_raw.columns if "!!Estimate" in c]
+df_estimates = df_acs_raw[estimate_cols].T
+
+# --- STEP 2: EXTRACT KEY POLICY VARIABLES ---
+# Searching for specific labels using string contains due to potential \xa0 (non-breaking spaces)
+# I need: 1. Median Household Income, 2. Total Households (as a denominator for normalization)
+income_label = [idx for idx in df_acs_raw.index if "Median household income (dollars)" in idx][0]
+households_label = [idx for idx in df_acs_raw.index if "Total households" in idx][0]
+
+df_policy_acs = df_estimates[[income_label, households_label]].copy()
+
+# Rename to clean, lowercase column names for easier coding
+df_policy_acs.columns = ['median_income', 'total_households']
+
+# Clean string formats (remove commas) and convert to numeric
+for col in ['median_income', 'total_households']:
+    df_policy_acs[col] = pd.to_numeric(df_policy_acs[col].astype(str).str.replace(',', ''), errors='coerce')
+
+# --- STEP 3: STATE NAME MAPPING ---
+# Extract State name from index (e.g., "Alabama!!Estimate" -> "Alabama")
+df_policy_acs.index = df_policy_acs.index.str.replace("!!Estimate", "")
+df_policy_acs = df_policy_acs.reset_index().rename(columns={'index': 'state_name'})
+
+# Create a mapping dictionary to align ACS state names with CMS state abbreviations
+state_to_abbr = {
+    "Alabama": "AL", "Alaska": "AK", "Arizona": "AZ", "Arkansas": "AR", "California": "CA",
+    "Colorado": "CO", "Connecticut": "CT", "Delaware": "DE", "Florida": "FL", "Georgia": "GA",
+    "Hawaii": "HI", "Idaho": "ID", "Illinois": "IL", "Indiana": "IN", "Iowa": "IA",
+    "Kansas": "KS", "Kentucky": "KY", "Louisiana": "LA", "Maine": "ME", "Maryland": "MD",
+    "Massachusetts": "MA", "Michigan": "MI", "Minnesota": "MN", "Mississippi": "MS", "Missouri": "MO",
+    "Montana": "MT", "Nebraska": "NE", "Nevada": "NV", "New Hampshire": "NH", "New Jersey": "NJ",
+    "New Mexico": "NM", "New York": "NY", "North Carolina": "NC", "North Dakota": "ND", "Ohio": "OH",
+    "Oklahoma": "OK", "Oregon": "OR", "Pennsylvania": "PA", "Rhode Island": "RI", "South Carolina": "SC",
+    "South Dakota": "SD", "Tennessee": "TN", "Texas": "TX", "Utah": "UT", "Vermont": "VT",
+    "Virginia": "VA", "Washington": "WA", "West Virginia": "WV", "Wisconsin": "WI", "Wyoming": "WY",
+    "District of Columbia": "DC"
+}
+df_policy_acs['state_abbr'] = df_policy_acs['state_name'].map(state_to_abbr)
+
+# --- STEP 4: MERGE WITH CMS DATA ---
+cms_state_summary = payments_df.groupby('state')['payment_amount'].sum().reset_index()
+
+merged_df = pd.merge(
+    cms_state_summary, 
+    df_policy_acs, 
+    left_on='state', 
+    right_on='state_abbr', 
+    how='inner'
+)
+
+# --- STEP 5: CALCULATE NORMALIZED POLICY METRICS ---
+# I use 'payment_amount' divided by 'total_households' from ACS
+merged_df['payment_per_household'] = (
+    merged_df['payment_amount'] / merged_df['total_households']
+)
+
+print("Integration complete. Dataset 'merged_df' created successfully.")
+print(merged_df[['state_name', 'median_income', 'payment_per_household']].head())
+```
+
+
+## 3. Payment Landscape Overview
+
+I begin by examining where money is spent. Understanding the overall composition of payment types provides a foundation for all later analysis.
+
+```{python}
+# define the key variables for the analysis
+key_vars = [
+    "payment_type",
+    "payment_amount",
+    "specialty",
+    "recipient_type",
+    "state",
+    "payment_date"
+]
+
+# create a summary table of total payments by cleaned payment type
+payment_summary = (
+    payments_df.groupby("payment_type_clean")
+      .agg(
+          n_payments=("payment_amount", "size"),
+          total_amount=("payment_amount", "sum"),
+          mean_amount=("payment_amount", "mean")
+      )
+      .sort_values("total_amount", ascending=False)
+)
+
+payment_summary.head(10)
+
+# calculate the share of total payments and total amount for each payment type
+payment_summary["share_of_payments"] = (
+    payment_summary["n_payments"] / payment_summary["n_payments"].sum()
+)
+
+payment_summary["share_of_amount"] = (
+    payment_summary["total_amount"] / payment_summary["total_amount"].sum()
+)
+
+payment_summary.sort_values("share_of_amount", ascending=False).head(10)
+```
