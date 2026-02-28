@@ -1,2 +1,5 @@
+data/raw-data/
 *.csv
-data/
+*.DS_Store
+
+!data/derived-data/
