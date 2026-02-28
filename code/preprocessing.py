@@ -57,6 +57,7 @@ def run_preprocessing():
 
     # Clean specialty names
     payments_df["specialty_clean"] = payments_df["specialty"].str.split("|").str[-1].str.strip()
+    payments_df.head()
     
     # Mapping for Nature of Payments (Cleaning up long descriptions)
     nature_map = {
@@ -71,18 +72,12 @@ def run_preprocessing():
         'Entertainment': 'Entertainment'
     }
 
-    # Create cleaned columns from raw Open Payments columns
-    if 'Nature_of_Payment_or_Transfer_of_Value' in payments_df.columns:
-        payments_df['payment_type_clean'] = payments_df['Nature_of_Payment_or_Transfer_of_Value'].map(nature_map).fillna('Other')
-    else:
-        # Fallback if the column name is slightly different
-        payments_df['payment_type_clean'] = 'Other'
-
-    # Clean up Physician Specialty
-    if 'Physician_Specialty' in payments_df.columns:
-        payments_df['specialty_clean'] = payments_df['Physician_Specialty'].fillna('General/Unknown')
-    else:
-        payments_df['specialty_clean'] = 'Unknown'  
+    # create a new column with the cleaned payment type categories
+    payments_df["payment_type_clean"] = (
+        payments_df["payment_type"]
+        .map(nature_map)
+        .fillna("Other")
+    )
 
     # --- STEP 4: ACS Data Preparation ---
     print("Processing ACS Census data...")
