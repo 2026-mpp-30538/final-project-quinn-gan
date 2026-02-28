@@ -61,15 +61,19 @@ def run_preprocessing():
     
     # Mapping for Nature of Payments (Cleaning up long descriptions)
     nature_map = {
-        'Food and Beverage': 'Food & Beverage',
-        'Consulting Fee': 'Consulting',
-        'Travel and Lodging': 'Travel',
-        'Honoraria': 'Honoraria',
-        'Compensation for services other than consulting...': 'Contracted Services',
-        'Education': 'Education',
-        'Grant': 'Research/Grants',
-        'Gift': 'Gifts',
-        'Entertainment': 'Entertainment'
+    "Compensation for services other than consulting, including serving as faculty or as a speaker at a venue other than a continuing education program":
+        "Non-consulting professional services",
+
+    "Consulting Fee": "Consulting",
+    "Food and Beverage": "Food & Beverage",
+    "Travel and Lodging": "Travel & Lodging",
+    "Royalty or License": "Royalty / License",
+    "Honoraria": "Honoraria",
+    "Education": "Education",
+    "Grant": "Grant",
+    "Acquisitions": "Acquisitions",
+    "Entertainment": "Entertainment",
+    "Long term medical supply or device loan": "Device / Supply Loan"
     }
 
     # create a new column with the cleaned payment type categories
