@@ -1,5 +1,5 @@
 data/raw-data/
 *.csv
 .DS_Store
-!data/derived-data/
+.DS_Store
 !data/derived-data/*.csv
