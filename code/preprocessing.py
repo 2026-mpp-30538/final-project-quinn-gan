@@ -57,6 +57,32 @@ def run_preprocessing():
 
     # Clean specialty names
     payments_df["specialty_clean"] = payments_df["specialty"].str.split("|").str[-1].str.strip()
+    
+    # Mapping for Nature of Payments (Cleaning up long descriptions)
+    nature_map = {
+        'Food and Beverage': 'Food & Beverage',
+        'Consulting Fee': 'Consulting',
+        'Travel and Lodging': 'Travel',
+        'Honoraria': 'Honoraria',
+        'Compensation for services other than consulting...': 'Contracted Services',
+        'Education': 'Education',
+        'Grant': 'Research/Grants',
+        'Gift': 'Gifts',
+        'Entertainment': 'Entertainment'
+    }
+
+    # Create cleaned columns from raw Open Payments columns
+    if 'Nature_of_Payment_or_Transfer_of_Value' in payments_df.columns:
+        payments_df['payment_type_clean'] = payments_df['Nature_of_Payment_or_Transfer_of_Value'].map(nature_map).fillna('Other')
+    else:
+        # Fallback if the column name is slightly different
+        payments_df['payment_type_clean'] = 'Other'
+
+    # Clean up Physician Specialty
+    if 'Physician_Specialty' in payments_df.columns:
+        payments_df['specialty_clean'] = payments_df['Physician_Specialty'].fillna('General/Unknown')
+    else:
+        payments_df['specialty_clean'] = 'Unknown'  
 
     # --- STEP 4: ACS Data Preparation ---
     print("Processing ACS Census data...")
@@ -102,15 +128,16 @@ def run_preprocessing():
     # --- STEP 5: Merge CMS & ACS ---
     print("Merging datasets...")
     state_summary = payments_df.groupby('state')['payment_amount'].sum().reset_index()
-    
-    merged_df = pd.merge(state_summary, df_policy_acs, left_on='state', right_on='state_abbr', how='inner')
+    map_data = pd.merge(state_summary, df_policy_acs, left_on='state', right_on='state_abbr', how='inner')
+    map_data['payment_per_household'] = map_data['payment_amount'] / map_data['total_households']
     
     # Normalize
-    merged_df['payment_per_household'] = merged_df['payment_amount'] / merged_df['total_households']
+    map_data.to_csv("data/derived-data/cms_acs_state_summary.csv", index=False)
 
     # --- STEP 6: Save to Derived Data ---
-    merged_df.to_csv(FINAL_OUTPUT_PATH, index=False)
-    print(f"Success! Integrated data saved at: {FINAL_OUTPUT_PATH}")
+    detail_data = payments_df.groupby(['state', 'specialty_clean', 'payment_type_clean'])['payment_amount'].sum().reset_index()
+    detail_data.to_csv("data/derived-data/cms_payments_details.csv", index=False)
+    print("Preprocessing complete! Saved state summary and detailed payment files.")
 
 if __name__ == "__main__":
     run_preprocessing()
